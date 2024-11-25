@@ -1,0 +1,41 @@
+{
+  "demos": [
+    {
+      "title": "Card Transactions",
+      "body": "Card transactions data with details on issuer country, transaction amount, and other details.",
+      "file": "https://raw.githubusercontent.com/gramener/datasets/main/card_transactions.csv",
+      "questions": [
+        "What is the total amount of transactions for each issuer country?",
+        "How many transactions were declined, and what are the most common decline reason codes?",
+        "What percentage of transactions were flagged as fraud, and how does this vary by industry segment?",
+        "Which channel has the highest number of successful transactions, and what is the average transaction amount for that channel?",
+        "What is the distribution of transaction types (e.g., purchase, refund) across different issuer regions?"
+      ]
+    },
+    {
+      "title": "HR: Employee Data",
+      "body": "Employee master data with demographics, job details, hierarchy, salary, performance, and other details.",
+      "file": "https://raw.githubusercontent.com/gramener/datasets/main/employee_data.csv",
+      "questions": [
+        "Which departments have the highest average salary and how many employees work in each?",
+        "What is the average time between hire and termination?",
+        "Which department has the highest performance, i.e. with a performance rating of 4 or above?",
+        "Which departments has the best gender balance and how many male & female employees work in each?",
+        "Who are the employees hired most recently, and what are their job titles?"
+      ]
+    },
+    {
+      "title": "Marvel Powers",
+      "body": "Every Marvel character and variant along with their powers (at their weakest and strongest) from Marvel Fandom.",
+      "file": "https://raw.githubusercontent.com/sanand0/marvel-powers/master/marvel-powers-summary.csv",
+      "questions": [
+        "List the powers of the top 10 characters by total power",
+        "What is the character with the highest maximum strength?",
+        "Which characters are the smartest?",
+        "How many characters have a minimum durability score greater than 50?",
+        "What is the average maximum speed of all characters listed?",
+        "Which character has the widest range between minimum and maximum energy projection?"
+      ]
+    }
+  ]
+}
