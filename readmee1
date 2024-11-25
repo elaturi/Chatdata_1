@@ -1,0 +1,6 @@
+To use this code, you'll need to:
+Replace the dbConfig values with your actual database credentials
+Ensure your database server accepts connections from your application
+Handle database credentials securely (don't hardcode them in production)
+Consider adding error handling for connection failures
+
