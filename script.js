@@ -1,4 +1,4 @@
-/* globals bootstrap */
+import sqlite3InitModule from "https://esm.sh/@sqlite.org/sqlite-wasm@3.46.1-build3";
 import { render, html } from "https://cdn.jsdelivr.net/npm/lit-html@3/+esm";
 import { unsafeHTML } from "https://cdn.jsdelivr.net/npm/lit-html@3/directives/unsafe-html.js";
 import { dsvFormat, autoType } from "https://cdn.jsdelivr.net/npm/d3-dsv@3/+esm";
@@ -6,19 +6,9 @@ import { Marked } from "https://cdn.jsdelivr.net/npm/marked@13/+esm";
 import { markedHighlight } from "https://cdn.jsdelivr.net/npm/marked-highlight@2/+esm";
 import hljs from "https://cdn.jsdelivr.net/npm/highlight.js@11/+esm";
 
-// Add this database configuration
-const dbConfig = {
-  user: 'your_username',
-  host: 'your_host',
-  database: 'your_database',
-  password: 'your_password',
-  port: 5432, // default PostgreSQL port
-};
-
-// Initialize PostgreSQL client
-import pg from 'https://cdn.jsdelivr.net/npm/pg@8/+esm';
-const { Pool } = pg;
-const pool = new Pool(dbConfig);
+// Initialize SQLite
+const defaultDB = "@";
+const sqlite3 = await sqlite3InitModule({ printErr: console.error });
 
 // Set up DOM elements
 const $demos = document.querySelector("#demos");
@@ -116,59 +106,24 @@ $demos.addEventListener("click", async (e) => {
 
 // --------------------------------------------------------------------
 // Manage database tables
+const db = new sqlite3.oo1.DB(defaultDB, "c");
 const DB = {
-  schema: async function () {
+  schema: function () {
     let tables = [];
-    const query = `
-      SELECT 
-        table_name as name,
-        'CREATE TABLE ' || table_name || ' (' || 
-        string_agg(
-          column_name || ' ' || data_type || 
-          CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END,
-          ', '
-        ) || ')' as sql
-      FROM information_schema.columns 
-      WHERE table_schema = 'public'
-      GROUP BY table_name;
-    `;
-    
-    const { rows: tableList } = await pool.query(query);
-    
-    for (const table of tableList) {
-      const columnQuery = `
-        SELECT 
-          column_name as name,
-          data_type as type,
-          CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END as notnull,
-          column_default as dflt_value,
-          CASE WHEN pk.column_name IS NOT NULL THEN 1 ELSE 0 END as pk
-        FROM information_schema.columns c
-        LEFT JOIN (
-          SELECT ku.column_name
-          FROM information_schema.table_constraints tc
-          JOIN information_schema.key_column_usage ku
-            ON tc.constraint_name = ku.constraint_name
-          WHERE tc.constraint_type = 'PRIMARY KEY'
-            AND tc.table_name = $1
-        ) pk ON c.column_name = pk.column_name
-        WHERE table_name = $1
-      `;
-      
-      const { rows: columns } = await pool.query(columnQuery, [table.name]);
-      table.columns = columns;
+    db.exec("SELECT name, sql FROM sqlite_master WHERE type='table'", { rowMode: "object" }).forEach((table) => {
+      table.columns = db.exec(`PRAGMA table_info(${table.name})`, { rowMode: "object" });
       tables.push(table);
-    }
+    });
     return tables;
   },
 
+  // Recommended questions for the current schema
   questionInfo: {},
-  
   questions: async function () {
-    if (DB.questionInfo.schema !== JSON.stringify(await DB.schema())) {
+    if (DB.questionInfo.schema !== JSON.stringify(DB.schema())) {
       const response = await llm({
-        system: "Suggest 5 diverse, useful questions that a user can answer from this dataset using SQL",
-        user: (await DB.schema())
+        system: "Suggest 5 diverse, useful questions that a user can answer from this dataset using SQLite",
+        user: DB.schema()
           .map(({ sql }) => sql)
           .join("\n\n"),
         schema: {
@@ -180,55 +135,94 @@ const DB = {
       });
       if (response.error) DB.questionInfo.error = response.error;
       else DB.questionInfo.questions = response.questions;
-      DB.questionInfo.schema = JSON.stringify(await DB.schema());
+      DB.questionInfo.schema = JSON.stringify(DB.schema());
     }
     return DB.questionInfo;
   },
 
+  upload: async function (file) {
+    if (file.name.match(/\.(sqlite3|sqlite|db|s3db|sl3)$/i)) await DB.uploadSQLite(file);
+    else if (file.name.match(/\.csv$/i)) await DB.uploadDSV(file, ",");
+    else if (file.name.match(/\.tsv$/i)) await DB.uploadDSV(file, "\t");
+    else notify("danger", `Unknown file type: ${file.name}`);
+  },
+
+  uploadSQLite: async function (file) {
+    const fileReader = new FileReader();
+    await new Promise((resolve) => {
+      fileReader.onload = async (e) => {
+        await sqlite3.capi.sqlite3_js_posix_create_file(file.name, e.target.result);
+        // Copy tables from the uploaded database to the default database
+        const uploadDB = new sqlite3.oo1.DB(file.name, "r");
+        const tables = uploadDB.exec("SELECT name, sql FROM sqlite_master WHERE type='table'", { rowMode: "object" });
+        for (const { name, sql } of tables) {
+          db.exec(sql);
+          const data = uploadDB.exec(`SELECT * FROM "${name}"`, { rowMode: "object" });
+          if (data.length > 0) {
+            const columns = Object.keys(data[0]);
+            const sql = `INSERT INTO "${name}" (${columns.map((c) => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+            const stmt = db.prepare(sql);
+            db.exec("BEGIN TRANSACTION");
+            for (const row of data) stmt.bind(columns.map((c) => row[c])).stepReset();
+            db.exec("COMMIT");
+            stmt.finalize();
+          }
+        }
+        uploadDB.close();
+        resolve();
+      };
+      fileReader.readAsArrayBuffer(file);
+    });
+    notify("success", "Imported", `Imported SQLite DB: ${file.name}`);
+  },
+
+  uploadDSV: async function (file, separator) {
+    const fileReader = new FileReader();
+    const result = await new Promise((resolve) => {
+      fileReader.onload = (e) => {
+        const rows = dsvFormat(separator).parse(e.target.result, autoType);
+        resolve(rows);
+      };
+      fileReader.readAsText(file);
+    });
+    const tableName = file.name.slice(0, -4).replace(/[^a-zA-Z0-9_]/g, "_");
+    await DB.insertRows(tableName, result);
+  },
+
   insertRows: async function (tableName, result) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      
-      // Create table by auto-detecting column types
-      const cols = Object.keys(result[0]);
-      const typeMap = Object.fromEntries(
-        cols.map((col) => {
-          const sampleValue = result[0][col];
-          let sqlType = 'TEXT';
-          if (typeof sampleValue === 'number') sqlType = Number.isInteger(sampleValue) ? 'INTEGER' : 'DECIMAL';
-          else if (typeof sampleValue === 'boolean') sqlType = 'BOOLEAN';
-          else if (sampleValue instanceof Date) sqlType = 'TIMESTAMP';
-          return [col, sqlType];
-        })
-      );
+    // Create table by auto-detecting column types
+    const cols = Object.keys(result[0]);
+    const typeMap = Object.fromEntries(
+      cols.map((col) => {
+        const sampleValue = result[0][col];
+        let sqlType = "TEXT";
+        if (typeof sampleValue === "number") sqlType = Number.isInteger(sampleValue) ? "INTEGER" : "REAL";
+        else if (typeof sampleValue === "boolean") sqlType = "INTEGER"; // SQLite has no boolean
+        else if (sampleValue instanceof Date) sqlType = "TEXT"; // Store dates as TEXT
+        return [col, sqlType];
+      })
+    );
+    const createTableSQL = `CREATE TABLE IF NOT EXISTS ${tableName} (${cols.map((col) => `[${col}] ${typeMap[col]}`).join(", ")})`;
+    db.exec(createTableSQL);
 
-      const createTableSQL = `CREATE TABLE IF NOT EXISTS "${tableName}" (${
-        cols.map(col => `"${col}" ${typeMap[col]}`).join(', ')
-      })`;
-      await client.query(createTableSQL);
-
-      // Insert data
-      const values = result.map(row => 
-        cols.map(col => row[col] instanceof Date ? row[col].toISOString() : row[col])
-      );
-      
-      const insertSQL = `
-        INSERT INTO "${tableName}" (${cols.map(col => `"${col}"`).join(', ')})
-        VALUES ${values.map((_, i) => `(${cols.map((_, j) => `$${i * cols.length + j + 1}`).join(', ')})`).join(', ')}
-      `;
-      
-      await client.query(insertSQL, values.flat());
-      await client.query('COMMIT');
-      notify('success', 'Imported', `Imported table: ${tableName}`);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      notify('danger', 'Error', `Failed to import table: ${error.message}`);
-      throw error;
-    } finally {
-      client.release();
+    // Insert data
+    const insertSQL = `INSERT INTO ${tableName} (${cols.map((col) => `[${col}]`).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`;
+    const stmt = db.prepare(insertSQL);
+    db.exec("BEGIN TRANSACTION");
+    for (const row of result) {
+      stmt
+        .bind(
+          cols.map((col) => {
+            const value = row[col];
+            return value instanceof Date ? value.toISOString() : value;
+          })
+        )
+        .stepReset();
     }
-  }
+    db.exec("COMMIT");
+    stmt.finalize();
+    notify("success", "Imported", `Imported table: ${tableName}`);
+  },
 };
 
 $upload.addEventListener("change", async (e) => {
@@ -250,7 +244,7 @@ async function drawTables() {
           <div class="accordion-item">
             <h2 class="accordion-header">
               <button
-                class="accordion-button collapsed"
+                class="accordion-button collapsed"        
                 type="button"
                 data-bs-toggle="collapse"
                 data-bs-target="#collapse-${name}"
@@ -370,7 +364,7 @@ Wrap columns with spaces inside [].`,
 
   // Extract everything inside {lang?}...```
   const sql = result.match(/```.*?\n(.*?)```/s)?.[1] ?? result;
-  const data = (await pool.query(sql)).rows;
+  const data = db.exec(sql, { rowMode: "object" });
 
   // Render the data using the utility function
   if (data.length > 0) {
@@ -464,8 +458,3 @@ function download(content, filename, type) {
   link.click();
   URL.revokeObjectURL(url);
 }
-
-// Add this cleanup function to close the database connection when needed
-window.addEventListener('beforeunload', () => {
-  pool.end();
-});
